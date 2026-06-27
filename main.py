@@ -1,5 +1,6 @@
 """
-main.py - BTC Trading Bot Ana Kontrol
+main.py - BTC Trading Bot + Dashboard API
+Bot döngüsü ve FastAPI aynı anda çalışır.
 """
 
 import asyncio
@@ -7,10 +8,13 @@ import logging
 import sys
 from datetime import datetime
 
+import uvicorn
+
 import config
 import analyzer
 import telegram_bot as tgbot
 from trader import AlpacaTrader
+from api import app as fastapi_app, shared_state, broadcast
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,8 +32,29 @@ active_position: dict | None = None
 last_signal_time: datetime | None = None
 SIGNAL_COOLDOWN_SEC = 600
 
-# Her analizin sonucu burada tutulur (son 20 kayıt)
-scan_history: list = []
+
+def ts() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def push(update: dict):
+    """shared_state'i güncelle ve WebSocket üzerinden yayınla"""
+    shared_state.update(update)
+    # broadcast'i event loop'a ekle
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(broadcast({"type": "update", **update}))
+    except Exception:
+        pass
+
+
+def add_signal(text: str, color: str = "blue"):
+    sigs = shared_state.get("signal_history", [])
+    sigs.insert(0, {"text": text, "color": color, "time": ts()})
+    if len(sigs) > 20:
+        sigs.pop()
+    push({"signal_history": sigs})
 
 
 async def execute_trade(signal: dict):
@@ -37,167 +62,171 @@ async def execute_trade(signal: dict):
     if active_position:
         await tg_app.bot.send_message(config.TELEGRAM_CHAT_ID, "⚠️ Zaten açık pozisyon var!")
         return
+
     result = trader.open_long(config.TRADE_AMOUNT_USD, signal)
     if result:
         active_position = {**signal, **result}
-        msg = (
-            f"🚀 *İŞLEM AÇILDI!*\n\n"
-            f"📌 Order ID: `{result['order_id']}`\n"
-            f"💰 Miktar: ${config.TRADE_AMOUNT_USD}\n"
-            f"📈 Giriş: ${signal['current_price']:,.2f}\n"
-            f"🎯 Hedef: ${signal['target_price']:,.2f}\n"
-            f"🛑 Stop: ${signal['stop_price']:,.2f}\n\n"
-            f"_Pozisyon otomatik izleniyor..._"
+        pos_data = {
+            "entry_price" : signal["current_price"],
+            "current_price": signal["current_price"],
+            "target_price": signal["target_price"],
+            "stop_price"  : signal["stop_price"],
+            "qty"         : config.TRADE_AMOUNT_USD / signal["current_price"],
+            "market_val"  : config.TRADE_AMOUNT_USD,
+            "unrealized"  : 0.0,
+            "unrealized_pct": 0.0,
+        }
+        push({"active_position": pos_data})
+        add_signal(f"İşlem açıldı — {signal['direction']} @ ${signal['current_price']:,.0f}", "green")
+
+        await tg_app.bot.send_message(
+            config.TELEGRAM_CHAT_ID,
+            f"🚀 *İŞLEM AÇILDI!*\n📈 {signal['direction']} @ ${signal['current_price']:,.2f}\n"
+            f"🎯 Hedef: ${signal['target_price']:,.2f}\n🛑 Stop: ${signal['stop_price']:,.2f}",
+            parse_mode="Markdown"
         )
-        await tg_app.bot.send_message(config.TELEGRAM_CHAT_ID, msg, parse_mode="Markdown")
     else:
+        add_signal("İşlem açılamadı — hata oluştu", "red")
         await tg_app.bot.send_message(config.TELEGRAM_CHAT_ID, "❌ İşlem açılamadı!")
 
 
-def _rsi_bar(rsi: float) -> str:
-    """RSI'yı görsel bar olarak göster"""
-    filled = int(rsi / 10)
-    bar = "█" * filled + "░" * (10 - filled)
-    return f"[{bar}] {rsi}"
-
-
-def _trend_arrow(change: float) -> str:
-    if change > 1:   return "⬆️"
-    if change > 0:   return "↗️"
-    if change < -1:  return "⬇️"
-    if change < 0:   return "↘️"
-    return "➡️"
-
-
-async def send_scan_report(data: dict):
-    """Her 5 dakikada bir tarama raporu gönder"""
-    pos_info = ""
-    if active_position:
-        positions = trader.get_open_positions()
-        if positions:
-            pos = positions[0]
-            pnl_emoji = "🟢" if pos["unrealized"] >= 0 else "🔴"
-            pos_info = (
-                f"\n━━━━━━━━━━━━━━━━━━━━\n"
-                f"📂 *Açık Pozisyon:*\n"
-                f"  {pnl_emoji} Kar/Zarar: ${pos['unrealized']:+.2f} ({pos['unrealized_pct']:+.2f}%)\n"
-                f"  🎯 Hedef: ${active_position['target_price']:,.2f}\n"
-                f"  🛑 Stop: ${active_position['stop_price']:,.2f}"
-            )
-
-    change = data.get("price_change", 0)
-    arrow = _trend_arrow(change)
-    rsi = data.get("rsi", 0)
-
-    # RSI rengi
-    if rsi < 35:      rsi_label = "Aşırı Satım 🔵"
-    elif rsi < 45:    rsi_label = "Zayıf"
-    elif rsi < 55:    rsi_label = "Nötr ⚪"
-    elif rsi < 65:    rsi_label = "Güçlü"
-    else:             rsi_label = "Aşırı Alım 🔴"
-
-    msg = (
-        f"📡 *TARAMA RAPORU*\n"
-        f"🕐 {datetime.now().strftime('%H:%M')} — Sinyal Yok\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 BTC Fiyat: ${data['current_price']:,.2f} {arrow}\n"
-        f"📊 5dk Değişim: {change:+.2f}%\n"
-        f"📅 24s Değişim: {data.get('change_24h', 0):+.2f}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 RSI: {_rsi_bar(rsi)}\n"
-        f"   → {rsi_label}\n"
-        f"📦 Hacim: Normalin {data.get('vol_ratio', 1):.1f}x\n"
-        f"🎯 Bollinger: {data.get('bb_position', '-')}"
-        f"{pos_info}"
-    )
-    await tg_app.bot.send_message(config.TELEGRAM_CHAT_ID, msg, parse_mode="Markdown")
-
-
 async def monitor_loop():
-    global active_position, last_signal_time, scan_history
+    global active_position, last_signal_time
+
+    push({"bot_status": "aktif", "scan_count": 0})
+    add_signal("Bot başladı — izleme aktif", "blue")
     logger.info("🤖 Monitor döngüsü başladı")
 
     while True:
         try:
             now = datetime.now()
+            scan_count = shared_state.get("scan_count", 0) + 1
 
-            # ── Pozisyon kontrolü ──
+            # ── Hesap güncelle ──────────────────────────
+            try:
+                acc = trader.get_account()
+                push({
+                    "account_cash"  : acc.get("cash", 0),
+                    "account_equity": acc.get("equity", 0),
+                })
+            except Exception:
+                pass
+
+            # ── Pozisyon kontrolü ───────────────────────
             if active_position:
+                positions = trader.get_open_positions()
+                if positions:
+                    pos = positions[0]
+                    pos_update = {
+                        "entry_price"   : active_position["current_price"],
+                        "current_price" : pos["avg_entry"] * (1 + pos["unrealized_pct"] / 100),
+                        "target_price"  : active_position["target_price"],
+                        "stop_price"    : active_position["stop_price"],
+                        "qty"           : pos["qty"],
+                        "market_val"    : pos["market_val"],
+                        "unrealized"    : pos["unrealized"],
+                        "unrealized_pct": pos["unrealized_pct"],
+                    }
+                    push({"active_position": pos_update})
+
                 status = trader.check_position_status(
-                    entry_price=active_position["current_price"],
-                    target=active_position["target_price"],
-                    stop=active_position["stop_price"],
+                    active_position["current_price"],
+                    active_position["target_price"],
+                    active_position["stop_price"],
                 )
                 if status == "take_profit":
                     trader.close_position()
-                    profit_est = config.TRADE_AMOUNT_USD * (config.TAKE_PROFIT_PCT / 100)
+                    profit = config.TRADE_AMOUNT_USD * config.TAKE_PROFIT_PCT / 100
+                    add_signal(f"Kar alındı! +${profit:.2f}", "green")
+                    push({"active_position": None})
+                    active_position = None
                     await tg_app.bot.send_message(
                         config.TELEGRAM_CHAT_ID,
-                        f"✅ *KAR ALINDI!* 🎉\nTahmini Kar: +${profit_est:.2f}",
+                        f"✅ *KAR ALINDI!* +${profit:.2f}",
                         parse_mode="Markdown"
                     )
-                    active_position = None
-
                 elif status == "stop_loss":
                     trader.close_position()
-                    loss_est = config.TRADE_AMOUNT_USD * (config.STOP_LOSS_PCT / 100)
+                    loss = config.TRADE_AMOUNT_USD * config.STOP_LOSS_PCT / 100
+                    add_signal(f"Stop loss tetiklendi. -${loss:.2f}", "red")
+                    push({"active_position": None})
+                    active_position = None
                     await tg_app.bot.send_message(
                         config.TELEGRAM_CHAT_ID,
-                        f"🛑 *STOP LOSS TETİKLENDİ*\nTahmini Zarar: -${loss_est:.2f}",
+                        f"🛑 *STOP LOSS* -${loss:.2f}",
                         parse_mode="Markdown"
                     )
-                    active_position = None
 
-            # ── Analiz ──
-            cooldown_ok = (
-                last_signal_time is None or
-                (now - last_signal_time).total_seconds() > SIGNAL_COOLDOWN_SEC
-            )
-
-            # Her durumda ham veri çek (rapor için)
+            # ── Analiz ─────────────────────────────────
             df = analyzer.get_btc_data(limit=100)
             if not df.empty:
-                current_price = df["close"].iloc[-1]
-                prev_price    = df["close"].iloc[-2]
-                price_change  = ((current_price - prev_price) / prev_price) * 100
-                rsi           = analyzer.calc_rsi(df["close"])
-                bb            = analyzer.calc_bollinger(df["close"])
-                vol_ratio     = df["volume"].iloc[-1] / df["volume"].iloc[-20:-1].mean()
+                price       = float(df["close"].iloc[-1])
+                prev        = float(df["close"].iloc[-2])
+                change_5m   = (price - prev) / prev * 100
+                rsi         = analyzer.calc_rsi(df["close"])
+                bb          = analyzer.calc_bollinger(df["close"])
+                vol_ratio   = float(df["volume"].iloc[-1]) / float(df["volume"].iloc[-20:-1].mean())
 
+                change_24h = change_5m
                 if len(df) >= 288:
-                    change_24h = ((current_price - df["close"].iloc[-288]) / df["close"].iloc[-288]) * 100
-                else:
-                    change_24h = price_change
+                    p24 = float(df["close"].iloc[-288])
+                    change_24h = (price - p24) / p24 * 100
 
-                bb_pos = ("ÜST BANT 🔴" if current_price > bb["upper"]
-                          else "ALT BANT 🔵" if current_price < bb["lower"]
+                bb_pos = ("ÜST BANT 🔴" if price > bb["upper"]
+                          else "ALT BANT 🔵" if price < bb["lower"]
                           else "Orta Bant ⚪")
 
-                scan_data = {
-                    "current_price": current_price,
-                    "price_change":  round(price_change, 3),
-                    "change_24h":    round(change_24h, 2),
-                    "rsi":           rsi,
-                    "vol_ratio":     round(vol_ratio, 2),
-                    "bb_position":   bb_pos,
-                    "time":          now.strftime("%H:%M"),
-                }
-                scan_history.append(scan_data)
-                if len(scan_history) > 20:
-                    scan_history.pop(0)
+                # Fiyat geçmişine ekle
+                history = shared_state.get("price_history", [])
+                history.append({"t": ts(), "p": round(price, 0)})
+                if len(history) > 60:
+                    history = history[-60:]
 
-                # Sinyal var mı?
-                if cooldown_ok:
+                # Tarama geçmişine ekle
+                scans = shared_state.get("scan_history", [])
+                scans.insert(0, {"t": ts(), "p": round(price, 0), "c": round(change_5m, 2), "r": round(rsi, 1)})
+                if len(scans) > 10:
+                    scans.pop()
+
+                push({
+                    "price"        : round(price, 2),
+                    "change_5m"    : round(change_5m, 3),
+                    "change_24h"   : round(change_24h, 2),
+                    "rsi"          : round(rsi, 2),
+                    "vol_ratio"    : round(vol_ratio, 2),
+                    "bb_upper"     : round(bb["upper"], 2),
+                    "bb_mid"       : round(bb["mid"], 2),
+                    "bb_lower"     : round(bb["lower"], 2),
+                    "bb_position"  : bb_pos,
+                    "scan_count"   : scan_count,
+                    "last_scan"    : ts(),
+                    "price_history": history,
+                    "scan_history" : scans,
+                })
+
+                # Fiyat tick'i yay (grafik için)
+                await broadcast({"type": "price_tick", "t": ts(), "p": round(price, 2)})
+
+                # Sinyal ara
+                cooldown_ok = (
+                    last_signal_time is None or
+                    (now - last_signal_time).total_seconds() > SIGNAL_COOLDOWN_SEC
+                )
+                if cooldown_ok and not active_position:
                     signal = analyzer.analyze(config)
                     if signal:
                         last_signal_time = now
+                        add_signal(
+                            f"{signal['direction']} sinyali — RSI:{rsi:.0f} Vol:{vol_ratio:.1f}x @ ${price:,.0f}",
+                            "green" if "LONG" in signal["direction"] else "red"
+                        )
                         await tgbot.send_signal(tg_app, config.TELEGRAM_CHAT_ID, signal, config.TRADE_AMOUNT_USD)
                     else:
-                        # Sinyal yok → tarama raporu gönder
-                        await send_scan_report(scan_data)
+                        add_signal(f"Tarama tamam — sinyal yok @ ${price:,.0f}", "blue")
 
         except Exception as e:
             logger.error(f"Döngü hatası: {e}", exc_info=True)
+            add_signal(f"Hata: {str(e)[:60]}", "red")
 
         await asyncio.sleep(config.CHECK_INTERVAL_SEC)
 
@@ -206,30 +235,49 @@ async def main():
     global trader, tg_app
 
     logger.info("=" * 55)
-    logger.info("  🤖 BTC TRADING BOT - PAPER MODE BAŞLADI")
+    logger.info("  🤖 BTC BOT + DASHBOARD — BAŞLADI")
     logger.info("=" * 55)
 
     trader = AlpacaTrader(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_BASE_URL)
     acc = trader.get_account()
+    logger.info(f"💰 Paper Bakiye: ${acc.get('cash', 0):,.2f}")
 
-    tg_app = tgbot.create_app(config.TELEGRAM_BOT_TOKEN, execute_trade, scan_history, trader, active_position)
+    push({
+        "account_cash"  : acc.get("cash", 0),
+        "account_equity": acc.get("equity", 0),
+        "bot_status"    : "aktif",
+    })
+
+    tg_app = tgbot.create_app(
+        config.TELEGRAM_BOT_TOKEN,
+        execute_trade,
+        shared_state.get("scan_history", []),
+        trader,
+        active_position
+    )
 
     await tg_app.initialize()
     await tg_app.start()
+
+    port = int(__import__("os").environ.get("PORT", 8000))
+    dashboard_url = f"http://localhost:{port}"
+    logger.info(f"🌐 Dashboard: {dashboard_url}")
+
     await tg_app.bot.send_message(
         config.TELEGRAM_CHAT_ID,
-        f"🤖 *BTC Bot Başladı!*\n"
-        f"📊 Paper Bakiye: ${acc.get('cash', 0):,.2f}\n"
-        f"⏱ Her 5 dakikada tarama raporu gelecek\n\n"
-        f"📌 *Komutlar:*\n"
-        f"/durum — Anlık BTC durumu\n"
-        f"/gecmis — Son 5 tarama\n"
-        f"/pozisyon — Açık pozisyon\n"
-        f"/hesap — Bakiye bilgisi",
+        f"🤖 *BTC Bot + Dashboard Başladı!*\n"
+        f"💰 Paper Bakiye: ${acc.get('cash',0):,.2f}\n"
+        f"🌐 Panel: Railway URL'sini aç\n"
+        f"/durum /gecmis /pozisyon /hesap",
         parse_mode="Markdown"
     )
 
+    # FastAPI + Bot + Monitor paralel çalışır
+    uv_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=port, log_level="warning")
+    uv_server = uvicorn.Server(uv_config)
+
     await asyncio.gather(
+        uv_server.serve(),
         tg_app.updater.start_polling(),
         monitor_loop(),
     )
@@ -239,4 +287,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bot durduruldu (Ctrl+C)")
+        logger.info("Bot durduruldu.")

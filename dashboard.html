@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>BTC Trading Bot — Panel</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #0a0e1a;
+    --card:    #111827;
+    --border:  #1f2d45;
+    --text:    #e8eaf0;
+    --muted:   #64748b;
+    --green:   #00d4aa;
+    --red:     #ff4757;
+    --blue:    #4a9eff;
+    --yellow:  #ffc107;
+    --mono:    'JetBrains Mono', 'Fira Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: var(--card); position: sticky; top: 0; z-index: 99;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); animation: blink 2s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .logo-name { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: .05em; }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .status-pill { font-size: 11px; font-family: var(--mono); padding: 4px 10px; border-radius: 20px; border: 1px solid; }
+  .pill-ok    { border-color: var(--green); color: var(--green); }
+  .pill-warn  { border-color: var(--yellow); color: var(--yellow); }
+  .pill-err   { border-color: var(--red); color: var(--red); }
+  #clock { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+
+  main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+
+  /* KPI row */
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  @media(max-width:900px){ .kpi-row { grid-template-columns: repeat(2,1fr); } }
+  @media(max-width:500px){ .kpi-row { grid-template-columns: 1fr; } }
+
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+  .kpi-val { font-family: var(--mono); font-size: 26px; font-weight: 700; }
+  .kpi-sub { font-size: 12px; font-family: var(--mono); margin-top: 5px; color: var(--muted); }
+  .green { color: var(--green); } .red { color: var(--red); } .blue { color: var(--blue); }
+
+  /* Main grid */
+  .grid-main { display: grid; grid-template-columns: 1fr 300px; gap: 14px; margin-bottom: 14px; }
+  @media(max-width:1000px){ .grid-main { grid-template-columns: 1fr; } }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card-title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 12px; }
+
+  /* Chart */
+  .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .tf-btns { display: flex; gap: 4px; }
+  .tf-btn {
+    font-size: 11px; font-family: var(--mono); padding: 4px 9px;
+    border: 1px solid var(--border); border-radius: 5px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: .15s;
+  }
+  .tf-btn:hover { border-color: var(--blue); color: var(--blue); }
+  .tf-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+  /* RSI gauge */
+  .rsi-wrap { text-align: center; margin: 8px 0; }
+  .rsi-val { font-family: var(--mono); font-size: 36px; font-weight: 700; }
+  .rsi-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .rsi-bar-track { background: var(--border); height: 6px; border-radius: 3px; margin: 10px 0 6px; position: relative; overflow: hidden; }
+  .rsi-bar-fill { height: 100%; border-radius: 3px; transition: width .8s ease, background .5s; }
+  .rsi-ticks { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--mono); color: var(--muted); }
+
+  /* Volume */
+  .vol-big { font-family: var(--mono); font-size: 28px; font-weight: 700; margin: 6px 0; }
+  .vol-track { background: var(--border); height: 5px; border-radius: 3px; margin: 8px 0 5px; overflow: hidden; }
+  .vol-fill { height: 100%; border-radius: 3px; background: var(--blue); transition: width .8s ease; }
+  .vol-meta { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--muted); }
+
+  /* Bollinger */
+  .bb-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .bb-item { text-align: center; }
+  .bb-item-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .bb-item-val { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+  .bb-position-bar { background: var(--border); height: 8px; border-radius: 4px; margin: 12px 0 6px; position: relative; overflow: visible; }
+  .bb-thumb { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--blue); top: -3px; border: 2px solid var(--bg); transition: left .8s ease; }
+  .bb-tag { text-align: center; font-size: 12px; font-family: var(--mono); margin-top: 8px; }
+
+  /* Bottom row */
+  .grid-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media(max-width:900px){ .grid-bottom { grid-template-columns: 1fr; } }
+
+  /* Position card */
+  .pos-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; gap: 8px; }
+  .pos-empty-icon { font-size: 32px; }
+  .pos-empty-text { font-size: 13px; color: var(--muted); }
+  .pos-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .pos-row:last-child { border-bottom: none; }
+  .pos-lbl { font-size: 12px; color: var(--muted); }
+  .pos-val { font-size: 12px; font-family: var(--mono); font-weight: 600; }
+  .pos-pnl { font-family: var(--mono); font-size: 22px; font-weight: 700; text-align: center; padding: 10px 0; }
+  .tp-sl-row { display: flex; justify-content: space-between; margin-top: 10px; gap: 8px; }
+  .tp-box, .sl-box {
+    flex: 1; text-align: center; padding: 8px; border-radius: 6px; font-size: 12px;
+  }
+  .tp-box { background: rgba(0,212,170,.1); border: 1px solid rgba(0,212,170,.25); color: var(--green); }
+  .sl-box { background: rgba(255,71,87,.1); border: 1px solid rgba(255,71,87,.25); color: var(--red); }
+  .tp-box span, .sl-box span { display: block; font-family: var(--mono); font-size: 13px; font-weight: 700; margin-top: 3px; }
+
+  /* Scan history */
+  .scan-row { display: grid; grid-template-columns: 42px 1fr 60px 44px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .scan-row:last-child { border-bottom: none; }
+  .scan-t { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .scan-p { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .scan-c { font-family: var(--mono); font-size: 11px; text-align: right; }
+  .scan-r { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+
+  /* Signal history */
+  .sig-row { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .sig-row:last-child { border-bottom: none; }
+  .sig-icon { width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+  .si-green { background: rgba(0,212,170,.15); }
+  .si-yellow { background: rgba(255,193,7,.15); }
+  .si-blue  { background: rgba(74,158,255,.15); }
+  .si-red   { background: rgba(255,71,87,.15); }
+  .sig-text { font-size: 12px; color: var(--text); line-height: 1.4; }
+  .sig-time { font-size: 10px; font-family: var(--mono); color: var(--muted); margin-top: 3px; }
+
+  /* Connection banner */
+  #conn-banner {
+    display: none; background: rgba(255,71,87,.15); border: 1px solid rgba(255,71,87,.3);
+    color: var(--red); font-size: 12px; font-family: var(--mono);
+    text-align: center; padding: 8px; margin-bottom: 14px; border-radius: 8px;
+  }
+
+  /* Progress bar on position */
+  .progress-wrap { margin: 10px 0; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--mono); color: var(--muted); margin-bottom: 4px; }
+  .progress-track { background: var(--border); height: 5px; border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 3px; transition: width .8s ease; }
+
+  .sidebar-cards { display: flex; flex-direction: column; gap: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot" id="liveDot"></div>
+    <span class="logo-name">BTC / USD &nbsp;·&nbsp; BOT PANELİ</span>
+  </div>
+  <div class="header-right">
+    <span class="status-pill pill-ok" id="statusPill">PAPER MODE</span>
+    <span id="clock">--:--:--</span>
+  </div>
+</header>
+
+<main>
+  <div id="conn-banner">⚠ WebSocket bağlantısı kesildi — yeniden bağlanıyor...</div>
+
+  <!-- KPI -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="kpi-label">BTC Fiyatı</div>
+      <div class="kpi-val" id="kPrice">$—</div>
+      <div class="kpi-sub" id="kChange5m">— 5dk</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">24 Saatlik</div>
+      <div class="kpi-val" id="kChange24h">—</div>
+      <div class="kpi-sub">son 24 saat</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Paper Bakiye</div>
+      <div class="kpi-val blue" id="kBalance">$—</div>
+      <div class="kpi-sub" id="kEquity">— toplam değer</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Tarama</div>
+      <div class="kpi-val" id="kScans">0</div>
+      <div class="kpi-sub" id="kLastScan">son tarama: —</div>
+    </div>
+  </div>
+
+  <!-- Chart + Sidebar -->
+  <div class="grid-main">
+    <div class="card">
+      <div class="chart-header">
+        <div class="card-title" style="margin:0">Fiyat Grafiği</div>
+        <div class="tf-btns">
+          <button class="tf-btn active" data-tf="5m">5d</button>
+          <button class="tf-btn" data-tf="15m">15d</button>
+          <button class="tf-btn" data-tf="1h">1s</button>
+          <button class="tf-btn" data-tf="4h">4s</button>
+        </div>
+      </div>
+      <div style="position:relative;height:210px">
+        <canvas id="priceChart"></canvas>
+      </div>
+    </div>
+
+    <div class="sidebar-cards">
+      <!-- RSI -->
+      <div class="card">
+        <div class="card-title">RSI (14)</div>
+        <div class="rsi-wrap">
+          <div class="rsi-val" id="rsiVal">—</div>
+          <div class="rsi-label" id="rsiLbl">Bekleniyor</div>
+        </div>
+        <div class="rsi-bar-track">
+          <div class="rsi-bar-fill" id="rsiBar" style="width:50%;background:var(--blue)"></div>
+        </div>
+        <div class="rsi-ticks"><span>0</span><span>35</span><span>65</span><span>100</span></div>
+      </div>
+
+      <!-- Volume -->
+      <div class="card">
+        <div class="card-title">Hacim</div>
+        <div class="vol-big" id="volVal">—</div>
+        <div class="vol-track"><div class="vol-fill" id="volBar" style="width:0%"></div></div>
+        <div class="vol-meta"><span>normal</span><span id="volPct">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom row -->
+  <div class="grid-bottom" style="margin-bottom:14px">
+    <!-- Pozisyon -->
+    <div class="card">
+      <div class="card-title">Açık Pozisyon</div>
+      <div id="posBody">
+        <div class="pos-empty">
+          <div class="pos-empty-icon">◎</div>
+          <div class="pos-empty-text">Pozisyon yok</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Son taramalar -->
+    <div class="card">
+      <div class="card-title">Son Taramalar</div>
+      <div id="scanList"><div style="color:var(--muted);font-size:12px;text-align:center;padding:20px">Bekleniyor...</div></div>
+    </div>
+
+    <!-- Bollinger -->
+    <div class="card">
+      <div class="card-title">Bollinger Bantları</div>
+      <div class="bb-grid">
+        <div class="bb-item"><div class="bb-item-label">Alt</div><div class="bb-item-val" id="bbLow" style="color:var(--green)">—</div></div>
+        <div class="bb-item"><div class="bb-item-label">Orta</div><div class="bb-item-val" id="bbMid" style="color:var(--muted)">—</div></div>
+        <div class="bb-item"><div class="bb-item-label">Üst</div><div class="bb-item-val" id="bbHigh" style="color:var(--red)">—</div></div>
+      </div>
+      <div class="bb-position-bar">
+        <div class="bb-thumb" id="bbThumb" style="left:50%"></div>
+      </div>
+      <div class="bb-tag" id="bbTag" style="color:var(--muted)">Bekleniyor</div>
+    </div>
+  </div>
+
+  <!-- Sinyal geçmişi -->
+  <div class="card">
+    <div class="card-title">Sinyal Geçmişi</div>
+    <div id="sigList">
+      <div class="sig-row">
+        <div class="sig-icon si-blue">📡</div>
+        <div><div class="sig-text">Panel yüklendi, bot bağlantısı bekleniyor...</div><div class="sig-time">şimdi</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const fmt   = n => '$' + Number(n).toLocaleString('tr-TR', {minimumFractionDigits:0, maximumFractionDigits:0});
+const fmtPct = n => (n>=0?'+':'')+Number(n).toFixed(2)+'%';
+const colorPct = n => n >= 0 ? 'var(--green)' : 'var(--red)';
+
+// ── Clock ──────────────────────────────────────────────────
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('tr-TR');
+}, 1000);
+
+// ── Chart ──────────────────────────────────────────────────
+let chartLabels = [];
+let chartData   = [];
+const ctx = document.getElementById('priceChart').getContext('2d');
+const priceChart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: chartLabels, datasets: [{
+    data: chartData,
+    borderColor: '#4a9eff',
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    fill: true,
+    backgroundColor: 'rgba(74,158,255,0.06)',
+    tension: 0.3
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 600 },
+    plugins: { legend: { display: false }, tooltip: {
+      mode: 'index', intersect: false, backgroundColor: '#111827',
+      titleColor: '#64748b', bodyColor: '#e8eaf0',
+      callbacks: { label: ctx => fmt(ctx.parsed.y) }
+    }},
+    scales: {
+      x: { grid: { color: '#1f2d45' }, ticks: { color: '#64748b', font: { size: 10, family: 'monospace' }, maxTicksLimit: 8 }},
+      y: { grid: { color: '#1f2d45' }, ticks: { color: '#64748b', font: { size: 10, family: 'monospace' }, callback: v => '$'+Math.round(v/1000)+'k' }}
+    }
+  }
+});
+
+function pushPrice(t, p) {
+  chartLabels.push(t);
+  chartData.push(p);
+  if (chartLabels.length > 60) { chartLabels.shift(); chartData.shift(); }
+  priceChart.update('active');
+}
+
+document.querySelectorAll('.tf-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── State Renderers ────────────────────────────────────────
+function renderState(s) {
+  // KPI
+  if (s.price) {
+    document.getElementById('kPrice').textContent = fmt(s.price);
+    const el5 = document.getElementById('kChange5m');
+    el5.textContent = fmtPct(s.change_5m) + ' (5dk)';
+    el5.style.color = colorPct(s.change_5m);
+
+    const el24 = document.getElementById('kChange24h');
+    el24.textContent = fmtPct(s.change_24h);
+    el24.style.color = colorPct(s.change_24h);
+  }
+  if (s.account_cash !== undefined) {
+    document.getElementById('kBalance').textContent = fmt(s.account_cash);
+    document.getElementById('kEquity').textContent = fmt(s.account_equity) + ' toplam değer';
+  }
+  if (s.scan_count !== undefined) {
+    document.getElementById('kScans').textContent = s.scan_count;
+    document.getElementById('kLastScan').textContent = 'son: ' + (s.last_scan || '—');
+  }
+
+  // RSI
+  if (s.rsi !== undefined) {
+    const rsi = +s.rsi;
+    document.getElementById('rsiVal').textContent = rsi.toFixed(1);
+    document.getElementById('rsiBar').style.width = rsi + '%';
+    let lbl, col;
+    if (rsi < 30)      { lbl='Aşırı Satım 🔵'; col='var(--blue)'; }
+    else if (rsi < 45) { lbl='Zayıf';           col='var(--yellow)'; }
+    else if (rsi < 55) { lbl='Nötr';            col='var(--muted)'; }
+    else if (rsi < 70) { lbl='Güçlü';           col='var(--green)'; }
+    else               { lbl='Aşırı Alım 🔴';   col='var(--red)'; }
+    document.getElementById('rsiLbl').textContent = lbl;
+    document.getElementById('rsiBar').style.background = col;
+    document.getElementById('rsiVal').style.color = col;
+  }
+
+  // Volume
+  if (s.vol_ratio !== undefined) {
+    const v = +s.vol_ratio;
+    document.getElementById('volVal').textContent = v.toFixed(1) + 'x';
+    document.getElementById('volBar').style.width = Math.min(v / 4 * 100, 100) + '%';
+    document.getElementById('volPct').textContent = (v>=1?'+':'')+((v-1)*100).toFixed(0)+'%';
+  }
+
+  // Bollinger
+  if (s.bb_upper) {
+    document.getElementById('bbLow').textContent  = fmt(s.bb_lower);
+    document.getElementById('bbMid').textContent  = fmt(s.bb_mid);
+    document.getElementById('bbHigh').textContent = fmt(s.bb_upper);
+    const range = s.bb_upper - s.bb_lower;
+    const pct   = range > 0 ? Math.min(Math.max((s.price - s.bb_lower) / range, 0.05), 0.95) * 92 + 4 : 50;
+    document.getElementById('bbThumb').style.left = pct.toFixed(1) + '%';
+
+    const pos = s.bb_position || 'Orta Bant';
+    let col = 'var(--muted)';
+    if (pos.includes('ÜST'))  col = 'var(--red)';
+    if (pos.includes('ALT'))  col = 'var(--green)';
+    document.getElementById('bbTag').textContent = pos;
+    document.getElementById('bbTag').style.color = col;
+  }
+
+  // Scan history
+  if (s.scan_history && s.scan_history.length) {
+    document.getElementById('scanList').innerHTML = s.scan_history.slice(0,7).map(sc => `
+      <div class="scan-row">
+        <span class="scan-t">${sc.t || ''}</span>
+        <span class="scan-p">${fmt(sc.p)}</span>
+        <span class="scan-c" style="color:${sc.c>=0?'var(--green)':'var(--red)'}">${fmtPct(sc.c)}</span>
+        <span class="scan-r">R:${Math.round(sc.r)}</span>
+      </div>`).join('');
+  }
+
+  // Signal history
+  if (s.signal_history && s.signal_history.length) {
+    const iconMap = { green:'🟢', red:'🔴', yellow:'🟡', blue:'🔵' };
+    const clsMap  = { green:'si-green', red:'si-red', yellow:'si-yellow', blue:'si-blue' };
+    document.getElementById('sigList').innerHTML = s.signal_history.slice(0,8).map(sig => `
+      <div class="sig-row">
+        <div class="sig-icon ${clsMap[sig.color]||'si-blue'}">${iconMap[sig.color]||'📡'}</div>
+        <div>
+          <div class="sig-text">${sig.text}</div>
+          <div class="sig-time">${sig.time}</div>
+        </div>
+      </div>`).join('');
+  }
+
+  // Position
+  renderPosition(s.active_position);
+
+  // Price history (full state)
+  if (s.price_history && s.price_history.length) {
+    chartLabels.length = 0; chartData.length = 0;
+    s.price_history.forEach(pt => { chartLabels.push(pt.t); chartData.push(pt.p); });
+    priceChart.update();
+  }
+}
+
+function renderPosition(pos) {
+  const el = document.getElementById('posBody');
+  if (!pos) {
+    el.innerHTML = `<div class="pos-empty"><div class="pos-empty-icon">◎</div><div class="pos-empty-text">Açık pozisyon yok</div></div>`;
+    return;
+  }
+  const pnl = pos.unrealized || 0;
+  const pnlPct = pos.unrealized_pct || 0;
+  const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const progressW = pos.target_price && pos.entry_price
+    ? Math.min(Math.max((pos.current_price - pos.entry_price) / (pos.target_price - pos.entry_price) * 100, 0), 100)
+    : 0;
+  el.innerHTML = `
+    <div class="pos-pnl" style="color:${pnlCol}">${pnl>=0?'+':''}${fmt(pnl)} (${fmtPct(pnlPct)})</div>
+    <div class="progress-wrap">
+      <div class="progress-label"><span>Giriş ${fmt(pos.entry_price)}</span><span>Hedef ${fmt(pos.target_price)}</span></div>
+      <div class="progress-track"><div class="progress-fill" style="width:${progressW.toFixed(1)}%;background:${pnlCol}"></div></div>
+    </div>
+    <div class="tp-sl-row">
+      <div class="tp-box">Hedef<span>${fmt(pos.target_price)}</span></div>
+      <div class="sl-box">Stop<span>${fmt(pos.stop_price)}</span></div>
+    </div>
+    <div style="margin-top:10px">
+      <div class="pos-row"><span class="pos-lbl">Miktar</span><span class="pos-val">${(pos.qty||0).toFixed(6)} BTC</span></div>
+      <div class="pos-row"><span class="pos-lbl">Piyasa Değeri</span><span class="pos-val">${fmt(pos.market_val)}</span></div>
+    </div>`;
+}
+
+// ── WebSocket ──────────────────────────────────────────────
+const WS_URL = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/ws';
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    document.getElementById('conn-banner').style.display = 'none';
+    document.getElementById('liveDot').style.background = 'var(--green)';
+    clearTimeout(reconnectTimer);
+    // ping her 30 sn
+    setInterval(() => { if(ws.readyState===1) ws.send('ping'); }, 30000);
+  };
+
+  ws.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'full_state' || d.type === 'update') {
+      renderState(d);
+    } else if (d.type === 'price_tick') {
+      pushPrice(d.t, d.p);
+      document.getElementById('kPrice').textContent = fmt(d.p);
+    }
+  };
+
+  ws.onclose = ws.onerror = () => {
+    document.getElementById('conn-banner').style.display = 'block';
+    document.getElementById('liveDot').style.background = 'var(--red)';
+    reconnectTimer = setTimeout(connect, 5000);
+  };
+}
+
+// İlk yüklemede REST'ten state çek, sonra WS'e bağlan
+fetch('/api/state')
+  .then(r => r.json())
+  .then(data => { renderState(data); connect(); })
+  .catch(() => connect());
+</script>
+</body>
+</html>
